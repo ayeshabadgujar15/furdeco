@@ -23,18 +23,20 @@ OUTPUT_COLUMNS = ["DATE", "RECIPIENT", "ORDER #", "POSTCODE", "DETAILS", "AMOUNT
 st.markdown(
     f"""
     <style>
-    .stApp {{
-        background-color: {BEIGE};
-    }}
-    [data-testid="stHeader"] {{
-        background-color: {BEIGE};
-    }}
+    /* Everything here is layered on top of Streamlit's own light/dark theme
+    rather than replacing it — .stApp keeps its normal (theme-controlled)
+    background, so switching the app's theme (light/dark, via the Settings
+    menu) still works. Only self-contained accent elements (banner, buttons,
+    borders) use the fixed palette, each with its own guaranteed-readable
+    text color, so they look right regardless of the surrounding theme. */
+
     .furdeco-banner {{
-        background-color: {DARK_GREEN};
+        background: linear-gradient(135deg, {DARK_GREEN} 0%, {MIDNIGHT_GREEN} 100%);
         color: {BEIGE};
         padding: 1.4rem 1.8rem;
         border-radius: 10px;
         margin-bottom: 1.4rem;
+        border-left: 6px solid {ROSY_BROWN};
     }}
     .furdeco-banner h1 {{
         color: {BEIGE};
@@ -47,34 +49,37 @@ st.markdown(
         font-size: 0.95rem;
     }}
     section[data-testid="stFileUploaderDropzone"] {{
-        background-color: white;
-        border: 1.5px dashed {MOSS_GREEN};
+        border: 1.5px dashed {MOSS_GREEN} !important;
         border-radius: 8px;
     }}
     .stButton > button, .stDownloadButton > button {{
         background-color: {MIDNIGHT_GREEN};
         color: {BEIGE};
-        border: none;
+        border: 1px solid {MIDNIGHT_GREEN};
         border-radius: 6px;
         font-weight: 600;
     }}
     .stButton > button:hover, .stDownloadButton > button:hover {{
-        background-color: {DARK_GREEN};
-        color: {BEIGE};
+        background-color: {ROSY_BROWN};
+        border-color: {ROSY_BROWN};
+        color: {DARK_GREEN};
     }}
     div[data-testid="stExpander"] {{
-        background-color: white;
-        border: 1px solid {MOSS_GREEN};
+        border: 1px solid {MOSS_GREEN} !important;
         border-radius: 8px;
     }}
+    div[data-testid="stExpander"] summary {{
+        color: {MOSS_GREEN};
+        font-weight: 600;
+    }}
     div[data-testid="stMetric"] {{
-        background-color: white;
         border-radius: 8px;
         padding: 0.6rem 0.8rem;
         border: 1px solid {MOSS_GREEN};
+        border-top: 3px solid {ROSY_BROWN};
     }}
-    div[data-baseweb="notification"] {{
-        border-radius: 8px;
+    [data-testid="stMetricLabel"] {{
+        color: {MOSS_GREEN} !important;
     }}
     </style>
     """,
