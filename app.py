@@ -122,6 +122,7 @@ if uploaded_files:
                     continue
 
                 for r in rows:
+                    amount_str = r["AMOUNT"].replace("£", "").replace(",", "").strip()
                     all_rows.append(
                         {
                             "DATE": r["DATE"],
@@ -129,7 +130,7 @@ if uploaded_files:
                             "ORDER #": r["ORDER #"],
                             "POSTCODE": r["POSTCODE"],
                             "DETAILS": r["DETAILS"],
-                            "AMOUNT": r["AMOUNT"],
+                            "AMOUNT": float(amount_str) if amount_str else 0.0,
                             "Price": "",
                             "Invoice No": invoice_no,
                             "Source File": f.name,
@@ -145,9 +146,7 @@ if uploaded_files:
     if all_rows:
         df = pd.DataFrame(all_rows)
 
-        total_amount = sum(
-            float(str(v).replace("£", "").replace(",", "") or 0) for v in df["AMOUNT"]
-        )
+        total_amount = df["AMOUNT"].sum()
         stat_cols = st.columns(3)
         stat_cols[0].metric("Line items", len(df))
         stat_cols[1].metric("Invoices", df["Invoice No"].nunique())
@@ -169,7 +168,12 @@ if uploaded_files:
             if chosen:
                 filtered_df = filtered_df[filtered_df[col_name].isin(chosen)]
 
-        st.dataframe(filtered_df[OUTPUT_COLUMNS + ["Source File"]], use_container_width=True, hide_index=True)
+        st.dataframe(
+            filtered_df[OUTPUT_COLUMNS + ["Source File"]],
+            use_container_width=True,
+            hide_index=True,
+            column_config={"AMOUNT": st.column_config.NumberColumn("AMOUNT", format="%.2f")},
+        )
         st.caption(f"Showing {len(filtered_df)} of {len(df)} row(s).")
 
         # Build the Excel file (only the requested columns, in the requested order),
@@ -194,6 +198,10 @@ if uploaded_files:
             for row in ws.iter_rows(min_row=1, max_row=last_row, max_col=len(OUTPUT_COLUMNS)):
                 for cell in row:
                     cell.alignment = no_wrap
+
+            amount_col_letter = chr(64 + OUTPUT_COLUMNS.index("AMOUNT") + 1)
+            for cell in ws[amount_col_letter][1:]:
+                cell.number_format = "0.00"
 
             ws.auto_filter.ref = f"A1:{last_col_letter}{last_row}"
             ws.freeze_panes = "A2"
