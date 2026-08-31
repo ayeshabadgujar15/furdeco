@@ -86,6 +86,7 @@ MOSS_GREEN = "#839958"
 BEIGE = "#F7F4D5"
 ROSY_BROWN = "#D3968C"
 MIDNIGHT_GREEN = "#105666"
+LIGHT_BLUE = "#ADD8E6"  # flags rows where Price couldn't be looked up
 
 HIGHLIGHT_THRESHOLD = 50  # AMOUNT above this gets the row highlighted
 
@@ -414,7 +415,12 @@ if uploaded_files:
             if chosen:
                 filtered_df = filtered_df[filtered_df[col_name].isin(chosen)]
 
-        def _highlight_high_amount(row):
+        def _row_style(row):
+            # Missing Price is a data-quality flag (the lookup failed) and
+            # takes priority over the amount highlight below — it's the more
+            # actionable thing to notice, so a row never shows both.
+            if pd.isna(row["Price"]):
+                return [f"background-color: {LIGHT_BLUE}66"] * len(row)
             if row["AMOUNT"] > HIGHLIGHT_THRESHOLD:
                 return [f"background-color: {ROSY_BROWN}55"] * len(row)
             return [""] * len(row)
@@ -423,10 +429,13 @@ if uploaded_files:
         styled_df = (
             display_df.style
             .format({"AMOUNT": "{:.2f}", "Price": "{:.2f}"}, na_rep="")
-            .apply(_highlight_high_amount, axis=1)
+            .apply(_row_style, axis=1)
         )
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
-        st.caption(f"Showing {len(filtered_df)} of {len(df)} row(s) — rows with AMOUNT over £{HIGHLIGHT_THRESHOLD} are highlighted.")
+        st.caption(
+            f"Showing {len(filtered_df)} of {len(df)} row(s) — rows with AMOUNT over £{HIGHLIGHT_THRESHOLD} "
+            "are highlighted, and rows where Price couldn't be looked up are shown in light blue."
+        )
 
         # Build the Excel file (only the requested columns, in the requested order),
         # with a filter dropdown on every column header so it can be filtered in Excel too.
@@ -459,18 +468,32 @@ if uploaded_files:
             for cell in ws[price_col_letter][1:]:
                 cell.number_format = "0.00"
 
-            # Highlight rows where AMOUNT is above the threshold — a solid pastel
-            # tint (Excel fills don't do translucency reliably across viewers,
-            # unlike the on-screen rgba highlight above).
-            highlight_fill = PatternFill(
+            # Highlight rows where AMOUNT is above the threshold, and separately
+            # flag rows where Price couldn't be looked up — solid pastel tints
+            # (Excel fills don't do translucency reliably across viewers, unlike
+            # the on-screen rgba highlight above). A missing Price takes
+            # priority, matching the on-screen behaviour above.
+            amount_highlight_fill = PatternFill(
                 start_color=_blend_with_white(ROSY_BROWN, 0.45),
                 end_color=_blend_with_white(ROSY_BROWN, 0.45),
                 fill_type="solid",
             )
-            for row_idx, amount in enumerate(export_df["AMOUNT"], start=2):
-                if amount > HIGHLIGHT_THRESHOLD:
-                    for cell in ws[row_idx]:
-                        cell.fill = highlight_fill
+            missing_price_fill = PatternFill(
+                start_color=_blend_with_white(LIGHT_BLUE, 0.6),
+                end_color=_blend_with_white(LIGHT_BLUE, 0.6),
+                fill_type="solid",
+            )
+            for row_idx, (amount, price) in enumerate(
+                zip(export_df["AMOUNT"], export_df["Price"]), start=2
+            ):
+                if pd.isna(price):
+                    fill = missing_price_fill
+                elif amount > HIGHLIGHT_THRESHOLD:
+                    fill = amount_highlight_fill
+                else:
+                    continue
+                for cell in ws[row_idx]:
+                    cell.fill = fill
 
             ws.auto_filter.ref = f"A1:{last_col_letter}{last_row}"
             ws.freeze_panes = "A2"
