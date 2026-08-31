@@ -5,7 +5,7 @@ from datetime import datetime
 
 import pandas as pd
 import streamlit as st
-from openpyxl.styles import Alignment
+from openpyxl.styles import Alignment, PatternFill
 
 from extractor import extract_from_pdf
 
@@ -15,6 +15,18 @@ MOSS_GREEN = "#839958"
 BEIGE = "#F7F4D5"
 ROSY_BROWN = "#D3968C"
 MIDNIGHT_GREEN = "#105666"
+
+HIGHLIGHT_THRESHOLD = 50  # AMOUNT above this gets the row highlighted
+
+
+def _blend_with_white(hex_color: str, amount: float) -> str:
+    """Lighten a hex color by blending it with white (amount=0 -> white, 1 -> original).
+    Used for the Excel row fill, since Excel fills need a solid color rather than
+    the translucent overlay used on-screen."""
+    hex_color = hex_color.lstrip("#")
+    r, g, b = (int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
+    r, g, b = (round(255 - (255 - c) * amount) for c in (r, g, b))
+    return f"{r:02X}{g:02X}{b:02X}"
 
 st.set_page_config(page_title="Furdeco Invoice Extractor", page_icon="📄", layout="wide")
 
@@ -178,13 +190,15 @@ if uploaded_files:
             if chosen:
                 filtered_df = filtered_df[filtered_df[col_name].isin(chosen)]
 
-        st.dataframe(
-            filtered_df[OUTPUT_COLUMNS + ["Source File"]],
-            use_container_width=True,
-            hide_index=True,
-            column_config={"AMOUNT": st.column_config.NumberColumn("AMOUNT", format="%.2f")},
-        )
-        st.caption(f"Showing {len(filtered_df)} of {len(df)} row(s).")
+        def _highlight_high_amount(row):
+            if row["AMOUNT"] > HIGHLIGHT_THRESHOLD:
+                return [f"background-color: {ROSY_BROWN}55"] * len(row)
+            return [""] * len(row)
+
+        display_df = filtered_df[OUTPUT_COLUMNS + ["Source File"]]
+        styled_df = display_df.style.format({"AMOUNT": "{:.2f}"}).apply(_highlight_high_amount, axis=1)
+        st.dataframe(styled_df, use_container_width=True, hide_index=True)
+        st.caption(f"Showing {len(filtered_df)} of {len(df)} row(s) — rows with AMOUNT over £{HIGHLIGHT_THRESHOLD} are highlighted.")
 
         # Build the Excel file (only the requested columns, in the requested order),
         # with a filter dropdown on every column header so it can be filtered in Excel too.
@@ -212,6 +226,19 @@ if uploaded_files:
             amount_col_letter = chr(64 + OUTPUT_COLUMNS.index("AMOUNT") + 1)
             for cell in ws[amount_col_letter][1:]:
                 cell.number_format = "0.00"
+
+            # Highlight rows where AMOUNT is above the threshold — a solid pastel
+            # tint (Excel fills don't do translucency reliably across viewers,
+            # unlike the on-screen rgba highlight above).
+            highlight_fill = PatternFill(
+                start_color=_blend_with_white(ROSY_BROWN, 0.45),
+                end_color=_blend_with_white(ROSY_BROWN, 0.45),
+                fill_type="solid",
+            )
+            for row_idx, amount in enumerate(export_df["AMOUNT"], start=2):
+                if amount > HIGHLIGHT_THRESHOLD:
+                    for cell in ws[row_idx]:
+                        cell.fill = highlight_fill
 
             ws.auto_filter.ref = f"A1:{last_col_letter}{last_row}"
             ws.freeze_panes = "A2"
