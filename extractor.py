@@ -136,6 +136,43 @@ def extract_from_pdf(pdf_path: str):
     all_rows = []
     full_text_parts = []
 
+    # This state deliberately lives OUTSIDE the page loop, not inside it — a
+    # multi-page invoice only prints the table header once (on the first
+    # page); later pages just continue the same table with no header line of
+    # their own. If col_bounds/table_active were reset to "no table seen yet"
+    # at the top of every page (as an earlier version of this function did),
+    # every row after page 1 would silently fail the "no header seen yet"
+    # check below and get dropped — the table would only ever be as long as
+    # whatever fit on the first page. Carrying col_bounds forward lets a page
+    # with no header of its own still be read using the columns from the
+    # last header we saw; encountering an actual header line (on any page)
+    # still refreshes col_bounds, which also handles invoices that *do*
+    # reprint the header on every page.
+    col_bounds = None
+    pending = []  # buffered (col, x0, text) fragments for the next row
+    current = None  # {col: [(x0, text), ...]}
+    main_line_had_content = {}
+    awaiting_suffix = False
+    # table_finished is permanent for the rest of the document once the
+    # invoice's own rollup/summary row is seen — that row only ever appears
+    # once, right after the true last line item, so nothing after it (on
+    # this page or any later one) is ever a line item.
+    table_finished = False
+
+    def flush(row):
+        """Returns True if the table is done after this row (i.e. it was
+        the invoice-level rollup row, which is always the only row in
+        its table)."""
+        if row is None:
+            return False
+        joined = {c: smart_join([t for _, _, t in sorted(row[c])]) for c in COLUMNS}
+        if SUMMARY_ROW_RE.match(joined["DETAILS"]):
+            return True
+        if not any(joined.values()):
+            return False
+        all_rows.append(joined)
+        return False
+
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
             full_text_parts.append(page.extract_text() or "")
@@ -144,26 +181,13 @@ def extract_from_pdf(pdf_path: str):
                 continue
             lines = _group_into_lines(words)
 
-            col_bounds = None
-            pending = []  # buffered (col, x0, text) fragments for the next row
-            current = None  # {col: [(x0, text), ...]}
-            main_line_had_content = {}
-            awaiting_suffix = False
-            table_active = False
-
-            def flush(row):
-                """Returns True if the table is done after this row (i.e. it was
-                the invoice-level rollup row, which is always the only row in
-                its table)."""
-                if row is None:
-                    return False
-                joined = {c: smart_join([t for _, _, t in sorted(row[c])]) for c in COLUMNS}
-                if SUMMARY_ROW_RE.match(joined["DETAILS"]):
-                    return True
-                if not any(joined.values()):
-                    return False
-                all_rows.append(joined)
-                return False
+            # Resume capturing at the top of every page as long as we already
+            # know the columns and haven't hit the real end of the table yet
+            # — this is what lets a continuation page with no header of its
+            # own still get read. table_active can still be paused for the
+            # rest of THIS page below (by the prose/footer heuristic) without
+            # that pause carrying over to the next page.
+            table_active = col_bounds is not None and not table_finished
 
             for line in lines:
                 header = _find_header_columns(line["words"])
@@ -191,6 +215,7 @@ def extract_from_pdf(pdf_path: str):
 
                 if is_main_line:
                     if flush(current):
+                        table_finished = True
                         table_active = False
                         current = None
                         continue
@@ -206,9 +231,13 @@ def extract_from_pdf(pdf_path: str):
                     # A non-main-line touching several columns at once isn't a
                     # genuine wrapped fragment (those only ever spill into one
                     # column) — it's prose below the table (bank details, T&Cs,
-                    # etc.). The table for this header is over.
+                    # etc.). Only pause capturing for the rest of *this* page —
+                    # boilerplate reprinted at the bottom of every page (e.g. a
+                    # "continued" notice or company details) shouldn't stop a
+                    # later page's genuine rows from being read; only the real
+                    # summary row (handled above) permanently ends the table.
                     if flush(current):
-                        pass
+                        table_finished = True
                     current = None
                     table_active = False
                 else:
@@ -230,6 +259,7 @@ def extract_from_pdf(pdf_path: str):
                                 pending.append((c, v))
 
             flush(current)
+            current = None
 
     invoice_no = extract_invoice_number("\n".join(full_text_parts))
     all_rows = [{k: clean_mojibake(v) for k, v in row.items()} for row in all_rows]
