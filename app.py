@@ -16,6 +16,21 @@ from extractor import extract_from_pdf
 
 PRICE_API_URL = "https://www.choicefurnituresuperstore.co.uk/order_furdeco_netTotal.php"
 
+# Some sites quietly reject requests that don't look like they came from a
+# real browser — Python's requests library sends a distinctive default
+# User-Agent ("python-requests/x.y") that's an easy, common thing for a
+# server (or something in front of it, like a WAF) to block, even while the
+# exact same order number works fine when a person visits the URL directly.
+# A normal browser User-Agent header sidesteps that without changing
+# anything about what's actually being requested.
+PRICE_API_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+}
+
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def fetch_price(order_no: str):
@@ -24,20 +39,46 @@ def fetch_price(order_no: str):
     re-running the script (e.g. every time a filter checkbox is toggled,
     since Streamlit reruns the whole script on any widget interaction)
     doesn't keep re-hitting the API for orders already looked up in this
-    session. Returns None on any failure (network error, bad order number,
-    unexpected response shape) rather than raising, so one bad lookup
-    doesn't take down the whole extraction."""
+    session.
+
+    Returns (price, reason): price is None on any failure, and reason is a
+    short machine-readable tag saying *why* (empty order number, timeout,
+    connection error, non-2xx HTTP status, unparseable JSON, the API's own
+    "not found"/error response, or a success response missing/malforming
+    the field we need). None of these raise — one bad lookup should never
+    take down the whole extraction — but the reason lets the UI show a
+    breakdown instead of one opaque "couldn't be looked up" count, which is
+    the only way to tell "the order numbers are wrong" apart from "the API
+    was unreachable" or "CFS genuinely doesn't have these orders"."""
     if not order_no:
-        return None
+        return None, "empty_order_number"
     try:
-        resp = requests.get(PRICE_API_URL, params={"order_no": order_no}, timeout=10)
-        resp.raise_for_status()
+        resp = requests.get(
+            PRICE_API_URL,
+            params={"order_no": order_no},
+            headers=PRICE_API_HEADERS,
+            timeout=15,
+        )
+    except requests.Timeout:
+        return None, "timeout"
+    except requests.RequestException:
+        return None, "connection_error"
+
+    if not resp.ok:
+        return None, f"http_{resp.status_code}"
+
+    try:
         data = resp.json()
-        if data.get("status") == "success":
-            return float(data["fNetTotal"])
-    except (requests.RequestException, ValueError, KeyError, TypeError):
-        pass
-    return None
+    except ValueError:
+        return None, "unparseable_response"
+
+    if data.get("status") != "success":
+        return None, "api_reported_not_found"
+
+    try:
+        return float(data["fNetTotal"]), None
+    except (KeyError, TypeError, ValueError):
+        return None, "malformed_success_response"
 
 # --- Palette ---
 DARK_GREEN = "#0A3323"
@@ -277,7 +318,7 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
     all_rows = []
     errors = []
-    price_lookup_failures = 0
+    price_failure_reasons = {}  # reason -> [order_no, ...], for the diagnostic breakdown below
 
     with st.spinner("Extracting..."):
         for f in uploaded_files:
@@ -296,9 +337,9 @@ if uploaded_files:
 
                 for r in rows:
                     amount_str = r["AMOUNT"].replace("£", "").replace(",", "").strip()
-                    price = fetch_price(r["ORDER #"])
-                    if price is None:
-                        price_lookup_failures += 1
+                    price, price_fail_reason = fetch_price(r["ORDER #"])
+                    if price_fail_reason:
+                        price_failure_reasons.setdefault(price_fail_reason, []).append(r["ORDER #"])
                     all_rows.append(
                         {
                             "DATE": r["DATE"],
@@ -319,12 +360,27 @@ if uploaded_files:
         for e in errors:
             st.warning(e)
 
-    if price_lookup_failures:
-        st.warning(
-            f"Price couldn't be looked up for {price_lookup_failures} line item(s) — "
-            "left blank. This usually means that order number isn't in CFS's system, "
-            "or the price lookup service is briefly unavailable."
-        )
+    if price_failure_reasons:
+        total_failed = sum(len(v) for v in price_failure_reasons.values())
+        reason_labels = {
+            "empty_order_number": "no Order # was extracted for this row",
+            "timeout": "the price API didn't respond in time",
+            "connection_error": "couldn't connect to the price API",
+            "unparseable_response": "the price API returned something that wasn't valid JSON",
+            "api_reported_not_found": "the price API says this order doesn't exist / isn't in its system",
+            "malformed_success_response": "the price API said success but the response was missing/invalid data",
+        }
+        with st.expander(
+            f"Price couldn't be looked up for {total_failed} line item(s) — left blank. Click for details.",
+            expanded=True,
+        ):
+            for reason, order_nos in sorted(price_failure_reasons.items(), key=lambda kv: -len(kv[1])):
+                label = reason_labels.get(reason, reason) if not reason.startswith("http_") else (
+                    f"the price API returned HTTP {reason.removeprefix('http_')}"
+                )
+                sample = ", ".join(repr(o) for o in order_nos[:8])
+                more = f" (+{len(order_nos) - 8} more)" if len(order_nos) > 8 else ""
+                st.write(f"**{len(order_nos)}** — {label}: {sample}{more}")
 
     if all_rows:
         df = pd.DataFrame(all_rows)
