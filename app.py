@@ -1,8 +1,12 @@
+import hashlib
+import hmac
 import io
 import os
 import tempfile
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 
+import extra_streamlit_components as stx
 import pandas as pd
 import streamlit as st
 from openpyxl.styles import Alignment, PatternFill
@@ -117,6 +121,126 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+
+COOKIE_NAME = "furdeco_auth"
+COOKIE_EXPIRY_DAYS = 30
+
+
+def get_cookie_manager() -> stx.CookieManager:
+    """A CookieManager is a browser-backed custom component — it must be
+    created exactly once per session (re-creating it on every rerun breaks
+    its internal state), so it's cached in session_state."""
+    if "cookie_manager" not in st.session_state:
+        st.session_state["cookie_manager"] = stx.CookieManager(key="furdeco_cookie_manager")
+    return st.session_state["cookie_manager"]
+
+
+def _make_token(password: str, expiry_str: str) -> str:
+    """An HMAC of the expiry, keyed by the app password. This lets the
+    cookie itself prove it was issued by someone who knew the password,
+    without ever storing the password (or anything reversible to it) in
+    the cookie."""
+    return hmac.new(password.encode(), expiry_str.encode(), hashlib.sha256).hexdigest()
+
+
+def require_login() -> None:
+    """Gate the rest of the app behind a single shared password, since this
+    app is publicly reachable and has no per-user accounts. The password
+    lives in Streamlit secrets (never in the repo) — locally in
+    .streamlit/secrets.toml (gitignored), and on Streamlit Community Cloud
+    under the app's Settings -> Secrets.
+
+    A successful login also drops a browser cookie (expiry + HMAC token) so
+    the user stays logged in across tab closes / browser restarts for
+    COOKIE_EXPIRY_DAYS, instead of having to log in again every visit."""
+    if st.session_state.get("authenticated"):
+        return
+
+    try:
+        correct_password = st.secrets["app_password"]
+    except Exception:
+        correct_password = None
+
+    if not correct_password:
+        st.error(
+            "This app has no password configured yet, so it's locked. "
+            "Set `app_password` in Secrets (locally: .streamlit/secrets.toml; "
+            "on Streamlit Cloud: app Settings -> Secrets) and reload."
+        )
+        st.stop()
+
+    cookie_manager = get_cookie_manager()
+
+    # Right after an explicit logout, skip trusting the cookie for this one
+    # run. The delete() call just told the browser to drop the cookie, but
+    # that's an async round trip to the frontend component — a get_all()
+    # issued immediately afterward can still read back the old value before
+    # the deletion has actually landed, which would silently re-authenticate
+    # the user the instant they clicked "Log out". One run without checking
+    # the cookie sidesteps that race; by the run after, the deletion has long
+    # since landed for real.
+    just_logged_out = st.session_state.pop("just_logged_out", False)
+    cookie_value = None if just_logged_out else (cookie_manager.get_all() or {}).get(COOKIE_NAME)
+
+    if cookie_value:
+        try:
+            # "|" rather than ":" — expiry_str is an ISO timestamp and already
+            # contains colons (e.g. "2026-09-30T07:49:00"), so splitting on ":"
+            # would cut the timestamp itself apart instead of separating it
+            # from the token.
+            expiry_str, token = cookie_value.split("|", 1)
+            expiry = datetime.fromisoformat(expiry_str)
+            if expiry > datetime.utcnow() and hmac.compare_digest(token, _make_token(correct_password, expiry_str)):
+                st.session_state["authenticated"] = True
+                return
+        except (ValueError, TypeError):
+            pass  # malformed/tampered cookie — fall through to the login form
+
+    st.text_input("Password", type="password", key="login_password")
+    submitted = st.button("Log in")
+
+    if submitted:
+        entered = st.session_state.get("login_password", "")
+        if hmac.compare_digest(entered, correct_password):
+            st.session_state["authenticated"] = True
+            expiry = datetime.utcnow() + timedelta(days=COOKIE_EXPIRY_DAYS)
+            expiry_str = expiry.isoformat()
+            token = _make_token(correct_password, expiry_str)
+            # Deliberately no st.rerun() here: the cookie component needs this
+            # same run to finish rendering in order to actually write the
+            # cookie in the browser. Forcing an immediate rerun tears the
+            # component down before it gets the chance, so the browser never
+            # ends up with the cookie even though session_state looks logged
+            # in. Falling through and letting this run finish handles both:
+            # session_state is already set, so the app below renders now, and
+            # the cookie is left to actually land in the browser for next time.
+            cookie_manager.set(
+                COOKIE_NAME,
+                f"{expiry_str}|{token}",
+                expires_at=expiry,
+                key="set_furdeco_cookie",
+            )
+        else:
+            st.error("Incorrect password.")
+
+    if not st.session_state.get("authenticated"):
+        st.stop()
+
+
+require_login()
+
+with st.sidebar:
+    if st.button("Log out"):
+        st.session_state["authenticated"] = False
+        st.session_state["just_logged_out"] = True
+        get_cookie_manager().delete(COOKIE_NAME, key="delete_furdeco_cookie")
+        # A brief pause gives the delete's frontend round-trip a head start
+        # before the page reruns (belt-and-braces — require_login()'s
+        # just_logged_out check above is what actually guarantees this
+        # logout can't be undone by a stale cookie read).
+        time.sleep(0.5)
+        st.rerun()
 
 uploaded_files = st.file_uploader(
     "Upload invoice PDF(s)",
