@@ -31,26 +31,36 @@ st.markdown(
     text color, so they look right regardless of the surrounding theme. */
 
     .furdeco-banner {{
-        background: linear-gradient(135deg, {DARK_GREEN} 0%, {MIDNIGHT_GREEN} 100%);
-        color: {BEIGE};
+        background-color: {ROSY_BROWN};
+        color: {MIDNIGHT_GREEN};
         padding: 1.4rem 1.8rem;
         border-radius: 10px;
         margin-bottom: 1.4rem;
-        border-left: 6px solid {ROSY_BROWN};
+        border: 1px solid {MIDNIGHT_GREEN}55;
     }}
     .furdeco-banner h1 {{
-        color: {BEIGE};
+        color: {MIDNIGHT_GREEN};
         margin: 0;
         font-size: 1.7rem;
     }}
     .furdeco-banner p {{
-        color: {MOSS_GREEN};
+        color: {MIDNIGHT_GREEN};
         margin: 0.3rem 0 0 0;
         font-size: 0.95rem;
+        font-weight: 600;
     }}
     section[data-testid="stFileUploaderDropzone"] {{
         border: 1.5px dashed {MOSS_GREEN} !important;
         border-radius: 8px;
+        padding: 0.5rem !important;
+    }}
+    section[data-testid="stFileUploaderDropzone"] button {{
+        padding: 0.15rem 0.7rem !important;
+        min-height: 0 !important;
+        font-size: 0.8rem !important;
+    }}
+    section[data-testid="stFileUploaderDropzone"] small {{
+        font-size: 0.72rem !important;
     }}
     .stButton > button, .stDownloadButton > button {{
         background-color: {MIDNIGHT_GREEN};
