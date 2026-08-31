@@ -198,6 +198,18 @@ def extract_from_pdf(pdf_path: str):
                     col_bounds = header
                     awaiting_suffix = False
                     table_active = True
+                    # A fresh header line is unambiguous proof this is a new,
+                    # active table section — reset table_finished too, not
+                    # just table_active. Some invoices put a one-row summary
+                    # ("N Charges @ £X") on its own cover page, in the same
+                    # header+row layout as the real per-order table that then
+                    # starts fresh on the next page. Without this reset, that
+                    # cover-page summary would permanently mark the document
+                    # "finished", and a later page that continues the *real*
+                    # table without repeating the header would never re-arm
+                    # (nothing else resets table_finished), silently dropping
+                    # every row on it.
+                    table_finished = False
                     continue
 
                 if col_bounds is None or not table_active:
