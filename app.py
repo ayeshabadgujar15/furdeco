@@ -8,10 +8,36 @@ from datetime import datetime, timedelta
 
 import extra_streamlit_components as stx
 import pandas as pd
+import requests
 import streamlit as st
 from openpyxl.styles import Alignment, PatternFill
 
 from extractor import extract_from_pdf
+
+PRICE_API_URL = "https://www.choicefurnituresuperstore.co.uk/order_furdeco_netTotal.php"
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def fetch_price(order_no: str):
+    """Look up the net total (Price) for one order number from CFS's own
+    order_furdeco_netTotal API. Cached by order number for an hour, so
+    re-running the script (e.g. every time a filter checkbox is toggled,
+    since Streamlit reruns the whole script on any widget interaction)
+    doesn't keep re-hitting the API for orders already looked up in this
+    session. Returns None on any failure (network error, bad order number,
+    unexpected response shape) rather than raising, so one bad lookup
+    doesn't take down the whole extraction."""
+    if not order_no:
+        return None
+    try:
+        resp = requests.get(PRICE_API_URL, params={"order_no": order_no}, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("status") == "success":
+            return float(data["fNetTotal"])
+    except (requests.RequestException, ValueError, KeyError, TypeError):
+        pass
+    return None
 
 # --- Palette ---
 DARK_GREEN = "#0A3323"
@@ -251,6 +277,7 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
     all_rows = []
     errors = []
+    price_lookup_failures = 0
 
     with st.spinner("Extracting..."):
         for f in uploaded_files:
@@ -269,6 +296,9 @@ if uploaded_files:
 
                 for r in rows:
                     amount_str = r["AMOUNT"].replace("£", "").replace(",", "").strip()
+                    price = fetch_price(r["ORDER #"])
+                    if price is None:
+                        price_lookup_failures += 1
                     all_rows.append(
                         {
                             "DATE": r["DATE"],
@@ -277,7 +307,7 @@ if uploaded_files:
                             "POSTCODE": r["POSTCODE"],
                             "DETAILS": r["DETAILS"],
                             "AMOUNT": float(amount_str) if amount_str else 0.0,
-                            "Price": "",
+                            "Price": price,
                             "Invoice No": invoice_no,
                             "Source File": f.name,
                         }
@@ -289,8 +319,16 @@ if uploaded_files:
         for e in errors:
             st.warning(e)
 
+    if price_lookup_failures:
+        st.warning(
+            f"Price couldn't be looked up for {price_lookup_failures} line item(s) — "
+            "left blank. This usually means that order number isn't in CFS's system, "
+            "or the price lookup service is briefly unavailable."
+        )
+
     if all_rows:
         df = pd.DataFrame(all_rows)
+        df["Price"] = pd.to_numeric(df["Price"], errors="coerce")  # None -> NaN, so it displays/exports blank rather than the literal text "None"
 
         total_amount = df["AMOUNT"].sum()
         stat_cols = st.columns(3)
@@ -320,7 +358,11 @@ if uploaded_files:
             return [""] * len(row)
 
         display_df = filtered_df[OUTPUT_COLUMNS + ["Source File"]]
-        styled_df = display_df.style.format({"AMOUNT": "{:.2f}"}).apply(_highlight_high_amount, axis=1)
+        styled_df = (
+            display_df.style
+            .format({"AMOUNT": "{:.2f}", "Price": "{:.2f}"}, na_rep="")
+            .apply(_highlight_high_amount, axis=1)
+        )
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
         st.caption(f"Showing {len(filtered_df)} of {len(df)} row(s) — rows with AMOUNT over £{HIGHLIGHT_THRESHOLD} are highlighted.")
 
@@ -349,6 +391,10 @@ if uploaded_files:
 
             amount_col_letter = chr(64 + OUTPUT_COLUMNS.index("AMOUNT") + 1)
             for cell in ws[amount_col_letter][1:]:
+                cell.number_format = "0.00"
+
+            price_col_letter = chr(64 + OUTPUT_COLUMNS.index("Price") + 1)
+            for cell in ws[price_col_letter][1:]:
                 cell.number_format = "0.00"
 
             # Highlight rows where AMOUNT is above the threshold — a solid pastel
