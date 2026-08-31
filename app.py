@@ -337,7 +337,13 @@ if uploaded_files:
 
                 for r in rows:
                     amount_str = r["AMOUNT"].replace("£", "").replace(",", "").strip()
-                    price, price_fail_reason = fetch_price(r["ORDER #"])
+                    # Order numbers are meant to be just "CFS" + digits, but
+                    # occasionally pick up trailing text after a hyphen (e.g.
+                    # "CFS323516-PR9 7JF") from the PDF's own layout — a real
+                    # order number never contains a hyphen, so only the part
+                    # before it is ever sent to the price API.
+                    price_lookup_order_no = (r["ORDER #"] or "").split("-", 1)[0].strip()
+                    price, price_fail_reason = fetch_price(price_lookup_order_no)
                     if price_fail_reason:
                         price_failure_reasons.setdefault(price_fail_reason, []).append(r["ORDER #"])
                     all_rows.append(
